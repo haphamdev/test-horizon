@@ -5,9 +5,56 @@ managed by Laravel Horizon**, with multiple priority queues.
 
 Submit a notification over a public HTTP API; it is delivered asynchronously in
 the background. Urgent notifications (`critical`) always beat bulk ones
-(`bulk`) — a 10,000-recipient blast must never delay a password reset.
+(`bulk`) — a 10,000-recipient blast must never delay a one-time login code.
 
 > Functional specs live in [`specs/`](./specs/README.md).
+
+## Quick start
+
+Get both regions running, push some load through them, and watch it in Horizon —
+in five steps. See [Multi-region simulation](#multi-region-simulation-docker) for
+the full explanation of each.
+
+**1. Map the region subdomains** to localhost (root-owned file, needs sudo).
+
+```bash
+sudo sh -c 'printf "127.0.0.1 us.test-horizon.com\n127.0.0.1 asia.test-horizon.com\n" >> /etc/hosts'
+```
+
+**2. Create `.env` and the per-region docker env files**, then generate an APP_KEY.
+
+```bash
+cp .env.example .env
+cp docker/env/common.env.example docker/env/common.env
+cp docker/env/us.env.example docker/env/us.env
+cp docker/env/asia.env.example docker/env/asia.env
+php artisan key:generate
+```
+
+**3. Start the full stack** plus both Horizon dashboards.
+
+```bash
+docker compose --profile dashboard up -d
+```
+
+**4. Push some load** through both regions.
+
+```bash
+docker compose exec app-us php artisan notifyhub:simulate --url=http://localhost:8000 --rate=1
+docker compose exec app-asia php artisan notifyhub:simulate --url=http://localhost:8000 --rate=2
+```
+
+**5. Open the Horizon dashboards** in your browser to watch jobs drain by priority.
+
+- us — http://us.test-horizon.com:8090/horizon
+- asia — http://asia.test-horizon.com:8090/horizon
+
+The **Dashboard** and job lists are live immediately. The **Metrics** pages build
+from periodic snapshots, so give them a couple of minutes to populate — they read
+"Not Enough Data" until at least two one-minute snapshots exist (~2 min).
+
+> No PHP/Composer/Redis on the host needed for steps 3–5 (only step 2's
+> `key:generate`, or run it in a container — see [Create `.env`](#2-create-env)).
 
 ## Architecture
 
@@ -79,11 +126,14 @@ the two lines later to undo.
 ### 2. Create `.env`
 
 The containers bind-mount the repo and read non-regional base values (notably
-`APP_KEY`) from `.env`. Regional and connection settings are supplied by
-`docker/env/*.env` and **override** `.env`, so you only need a valid key:
+`APP_KEY`) from `.env`. Regional and connection settings come from
+`docker/env/*.env` and **override** `.env`, so copy the templates and generate a key:
 
 ```bash
 cp .env.example .env
+cp docker/env/common.env.example docker/env/common.env
+cp docker/env/us.env.example docker/env/us.env
+cp docker/env/asia.env.example docker/env/asia.env
 php artisan key:generate      # or: docker compose run --rm app-us php artisan key:generate
 ```
 
@@ -101,10 +151,10 @@ Horizon metrics); the two dashboard apps are opt-in (see
 
 Access each region through the proxy:
 
-| Region | API base | Horizon dashboard |
-|---|---|---|
-| us | `http://us.test-horizon.com:8090/api` | `http://us.test-horizon.com:8090/horizon` |
-| asia | `http://asia.test-horizon.com:8090/api` | `http://asia.test-horizon.com:8090/horizon` |
+| Region | API base                                | Horizon dashboard                           |
+| ------ | --------------------------------------- | ------------------------------------------- |
+| us     | `http://us.test-horizon.com:8090/api`   | `http://us.test-horizon.com:8090/horizon`   |
+| asia   | `http://asia.test-horizon.com:8090/api` | `http://asia.test-horizon.com:8090/horizon` |
 
 > The host port is `8090` (host `:80` is commonly taken by other local proxies).
 > Change the `nginx` port mapping in `compose.yaml` and the `APP_URL` in
@@ -124,12 +174,12 @@ docker compose exec app-us php artisan notifyhub:simulate --url=http://localhost
 docker compose exec app-asia php artisan notifyhub:simulate --url=http://localhost:8000 --rate=10
 ```
 
-| Option | Default | Meaning |
-|---|---|---|
-| `--url` | `config('app.url')` | Target base URL (use `http://localhost:8000` inside a container). |
-| `--rate` | `5` | Approximate requests per second. |
-| `--count` | `0` | Total requests (`0` = run until Ctrl+C). |
-| `--scheduled` | `0.15` | Probability a notification is scheduled 15–60s later. |
+| Option        | Default             | Meaning                                                           |
+| ------------- | ------------------- | ----------------------------------------------------------------- |
+| `--url`       | `config('app.url')` | Target base URL (use `http://localhost:8000` inside a container). |
+| `--rate`      | `5`                 | Approximate requests per second.                                  |
+| `--count`     | `0`                 | Total requests (`0` = run until Ctrl+C).                          |
+| `--scheduled` | `0.15`              | Probability a notification is scheduled 15–60s later.             |
 
 Priorities are weighted (bulk most common, critical rarest); bulk notifications
 fan out to 20–80 recipients, so a few requests create hundreds of delivery jobs.
@@ -146,7 +196,7 @@ docker compose exec db-us   psql -U postgres -d postgres -c 'select count(*) fro
 docker compose exec db-asia psql -U postgres -d postgres -c 'select count(*) from deliveries;'
 
 # Peek at a region's Redis
-docker compose exec redis-us redis-cli -a mypassword keys 'notifyhub*'
+docker compose exec redis-us redis-cli keys 'notifyhub*'
 ```
 
 ### Horizon dashboards
@@ -167,14 +217,13 @@ docker compose --profile dashboard up -d      # brings up dash-us + dash-asia to
 **same Redis, Redis prefix, and Horizon prefix** as that region. The compose
 `dash-<region>` services already inject these; the dashboard app must honor them:
 
-| Variable | Value (us / asia) | Why |
-|---|---|---|
-| `REDIS_HOST` | `redis-us` / `redis-asia` | Point at the region's broker. |
-| `REDIS_PASSWORD` | `mypassword` | Matches the broker's `--requirepass`. |
-| `REDIS_PREFIX` | `notifyhub:` | Must equal the backend's key prefix. |
-| `HORIZON_PREFIX` | `notifyhub_horizon:` | Must equal the backend's Horizon prefix. |
-| `HORIZON_NAME` | `us` / `asia` | Labels the dashboard's region. |
-| `SESSION_DRIVER`, `CACHE_STORE` | `file` | Dashboard needs no database. |
+| Variable                        | Value (us / asia)         | Why                                      |
+| ------------------------------- | ------------------------- | ---------------------------------------- |
+| `REDIS_HOST`                    | `redis-us` / `redis-asia` | Point at the region's broker.            |
+| `REDIS_PREFIX`                  | `notifyhub:`              | Must equal the backend's key prefix.     |
+| `HORIZON_PREFIX`                | `notifyhub_horizon:`      | Must equal the backend's Horizon prefix. |
+| `HORIZON_NAME`                  | `us` / `asia`             | Labels the dashboard's region.           |
+| `SESSION_DRIVER`, `CACHE_STORE` | `file`                    | Dashboard needs no database.             |
 
 The dashboard must serve HTTP on port `8000` (nginx proxies `/horizon` and
 `/vendor/horizon` to `dash-<region>:8000`).
@@ -182,8 +231,8 @@ The dashboard must serve HTTP on port `8000` (nginx proxies `/horizon` and
 **Metrics graphs.** Horizon's **Metrics** pages are built from periodic snapshots,
 not live data. A `scheduler-<region>` service runs `php artisan schedule:work` so the
 `horizon:snapshot` task (defined in [`routes/console.php`](./routes/console.php))
-fires every five minutes, writing snapshots into that region's Redis. Graphs show
-"Not Enough Data" until at least two snapshots exist (~10 min). For immediate points:
+fires every minute, writing snapshots into that region's Redis. Graphs show
+"Not Enough Data" until at least two snapshots exist (~2 min). For an immediate point:
 
 ```bash
 docker compose exec app-us php artisan horizon:snapshot      # and app-asia
@@ -200,12 +249,12 @@ docker compose down -v         # stop and wipe all per-region data
 
 Base path: `/api` on each region subdomain. No authentication. Responses are flat JSON.
 
-| Method | Path | Purpose |
-|---|---|---|
-| `POST` | `/api/notifications` | Create a notification (queues it for delivery). |
-| `GET` | `/api/notifications/{id}` | Status + per-recipient delivery breakdown. |
-| `PATCH` | `/api/notifications/{id}` | Update — allowed only while `pending`. |
-| `POST` | `/api/notifications/{id}/cancel` | Cancel — allowed only while `pending`. |
+| Method  | Path                             | Purpose                                         |
+| ------- | -------------------------------- | ----------------------------------------------- |
+| `POST`  | `/api/notifications`             | Create a notification (queues it for delivery). |
+| `GET`   | `/api/notifications/{id}`        | Status + per-recipient delivery breakdown.      |
+| `PATCH` | `/api/notifications/{id}`        | Update — allowed only while `pending`.          |
+| `POST`  | `/api/notifications/{id}/cancel` | Cancel — allowed only while `pending`.          |
 
 `priority` is one of `critical`, `transactional`, `bulk`.
 
