@@ -93,13 +93,11 @@ class NotificationController extends Controller
 
     /**
      * Enqueue fan-out now, or delay it until the scheduled time.
+     * A null scheduled_at means delay(null) — i.e. dispatch immediately.
      */
     protected function dispatchProcessing(Notification $notification): void
     {
-        $job = ProcessNotification::dispatch($notification);
-
-        if ($notification->scheduled_at !== null) {
-            $job->delay($notification->scheduled_at);
-        }
+        ProcessNotification::dispatch($notification)
+            ->delay($notification->scheduled_at);
     }
 }

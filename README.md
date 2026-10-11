@@ -68,18 +68,62 @@ php artisan serve                 # http://127.0.0.1:8000
 
 # Terminal 2 — queue workers (Horizon)
 php artisan horizon               # drains critical -> transactional -> bulk
+
+# Terminal 3 — scheduler (only needed for the Horizon metrics graphs)
+php artisan schedule:work
 ```
 
 - Horizon dashboard: `http://127.0.0.1:8000/horizon`
 - If port `8000` is in use, `php artisan serve` picks the next free port (watch its
-  startup line) or set one explicitly: `php artisan serve --port=8001`.
+  startup line) or set one explicitly: `php artisan serve --port=8001`. The
+  dashboard lives on whatever port `serve` actually bound (e.g. `:8001/horizon`),
+  since `/horizon` is served by the app — `php artisan horizon` has no web port.
 
 > **Do not use `composer run dev` / `php artisan dev` for this project.** That
 > runner starts `queue:listen` on the *default* queue, which does **not** process
 > the priority queues and is not Horizon. Run `php artisan horizon` instead.
 
-> Optional: schedule `horizon:snapshot` (every 5 min) to populate the Horizon
-> **metrics** graph. Not required for jobs to run.
+### Metrics graphs ("Not Enough Data")
+
+The per-queue **Metrics** pages (`/horizon/metrics/queues/{queue}`) are built from
+periodic *snapshots*, not live data. Running `php artisan horizon` alone records
+nothing on those graphs — you need `horizon:snapshot` to run on a schedule.
+
+- It's already registered in [`routes/console.php`](./routes/console.php):
+  `Schedule::command('horizon:snapshot')->everyFiveMinutes();`
+- Run `php artisan schedule:work` (Terminal 3) so it actually fires. In production,
+  a system cron runs `php artisan schedule:run` every minute instead.
+- The graph shows **"Not Enough Data"** until at least two snapshots exist, so give
+  it ~10 minutes of traffic. It fills out to 24 points (~2 hours) over time.
+- For **immediate** feedback that needs no snapshots, watch the Horizon dashboard's
+  **Current Workload** (pending jobs + processes + wait time per queue) and the
+  **Recent/Failed Jobs** pages while you generate load.
+
+## Generating load (watch Horizon)
+
+A built-in load generator POSTs randomized notifications to the API so you can
+watch jobs flow across the priority queues on the Horizon dashboard — mixed
+tiers, large bulk fan-outs, some scheduled (delayed) notifications, and retries.
+
+```bash
+# With serve running on 8001 (adjust --url to your port):
+php artisan notifyhub:simulate --url=http://127.0.0.1:8001 --rate=10
+
+# Finite burst, more scheduled jobs:
+php artisan notifyhub:simulate --url=http://127.0.0.1:8001 --count=50 --scheduled=0.3
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--url` | `config('app.url')` | Base URL of the running app. |
+| `--rate` | `5` | Approximate requests per second. |
+| `--count` | `0` | Total requests (`0` = run until Ctrl+C). |
+| `--scheduled` | `0.15` | Probability a notification is scheduled for 15–60s later. |
+
+Priorities are weighted (bulk most common, critical rarest); bulk notifications
+fan out to 20–80 recipients, so a few requests create hundreds of delivery jobs.
+Prefer an off-the-shelf tool for raw throughput? `oha`, `hey`, `vegeta`, or `k6`
+work too, but they send a fixed body — this command varies the payload.
 
 ## API
 
