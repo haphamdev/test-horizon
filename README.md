@@ -30,10 +30,10 @@ host to run the simulation (only to run the test suite; see [Testing](#testing))
 ### Topology
 
 ```
-                         http://us.test-horizon.com:8080
-                         http://asia.test-horizon.com:8080
+                         http://us.test-horizon.com:8090
+                         http://asia.test-horizon.com:8090
                                       |
-                                  [ nginx ]              (edge proxy, host :8080)
+                                  [ nginx ]              (edge proxy, host :8090)
                               /                \
                    Host: us.*                   Host: asia.*
                         |                             |
@@ -90,22 +90,23 @@ php artisan key:generate      # or: docker compose run --rm app-us php artisan k
 ### 3. Start the stack
 
 ```bash
-docker compose up -d          # builds the PHP image on first run, starts 9 services
+docker compose up -d          # builds the PHP image on first run, starts 11 services
 docker compose ps             # redis/db should be "healthy"; apps/horizon "running"
 ```
 
 Each app container runs its migrations on start, then serves the API. The default
-stack is **nginx + both regions** (9 services); the two dashboard apps are opt-in
-(see [Horizon dashboards](#horizon-dashboards)).
+stack is **nginx + both regions** (11 services, including a scheduler per region for
+Horizon metrics); the two dashboard apps are opt-in (see
+[Horizon dashboards](#horizon-dashboards)).
 
 Access each region through the proxy:
 
 | Region | API base | Horizon dashboard |
 |---|---|---|
-| us | `http://us.test-horizon.com:8080/api` | `http://us.test-horizon.com:8080/horizon` |
-| asia | `http://asia.test-horizon.com:8080/api` | `http://asia.test-horizon.com:8080/horizon` |
+| us | `http://us.test-horizon.com:8090/api` | `http://us.test-horizon.com:8090/horizon` |
+| asia | `http://asia.test-horizon.com:8090/api` | `http://asia.test-horizon.com:8090/horizon` |
 
-> The host port is `8080` (host `:80` is commonly taken by other local proxies).
+> The host port is `8090` (host `:80` is commonly taken by other local proxies).
 > Change the `nginx` port mapping in `compose.yaml` and the `APP_URL` in
 > `docker/env/*.env` together if you want a different port.
 
@@ -150,15 +151,16 @@ docker compose exec redis-us redis-cli -a mypassword keys 'notifyhub*'
 
 ### Horizon dashboards
 
-Each region's Horizon UI is a **separate, lightweight app** (its own codebase),
-scaffolded in `./horizon-dashboard`, so the worker backend and the dashboard scale
-and deploy independently — mirroring production. Until that app exists, `/horizon`
-returns a graceful `502` (nginx is configured to start regardless).
+Each region's Horizon UI is a **separate, lightweight Laravel + Horizon app**
+([`./horizon-dashboard`](./horizon-dashboard)) with its own codebase, so the worker
+backend and the dashboard scale and deploy independently — mirroring production. It
+has no database (file sessions/cache) and only reads the region's Redis.
 
-The dashboard apps are gated behind the `dashboard` compose profile:
+The dashboards are opt-in via the `dashboard` compose profile (the default stack
+runs without them, and `/horizon` then returns a graceful `502`):
 
 ```bash
-docker compose --profile dashboard up -d      # once ./horizon-dashboard exists
+docker compose --profile dashboard up -d      # brings up dash-us + dash-asia too
 ```
 
 **Dashboard env contract.** A dashboard shows a region's jobs only if it reads the
@@ -176,6 +178,16 @@ docker compose --profile dashboard up -d      # once ./horizon-dashboard exists
 
 The dashboard must serve HTTP on port `8000` (nginx proxies `/horizon` and
 `/vendor/horizon` to `dash-<region>:8000`).
+
+**Metrics graphs.** Horizon's **Metrics** pages are built from periodic snapshots,
+not live data. A `scheduler-<region>` service runs `php artisan schedule:work` so the
+`horizon:snapshot` task (defined in [`routes/console.php`](./routes/console.php))
+fires every five minutes, writing snapshots into that region's Redis. Graphs show
+"Not Enough Data" until at least two snapshots exist (~10 min). For immediate points:
+
+```bash
+docker compose exec app-us php artisan horizon:snapshot      # and app-asia
+```
 
 ### Stopping
 
@@ -201,13 +213,13 @@ Base path: `/api` on each region subdomain. No authentication. Responses are fla
 
 ```bash
 # Create (us region)
-curl -X POST http://us.test-horizon.com:8080/api/notifications \
+curl -X POST http://us.test-horizon.com:8090/api/notifications \
   -H 'Content-Type: application/json' -H 'Accept: application/json' \
   -d '{"message":"Your code is 123456","priority":"critical","recipients":["a@example.com","b@example.com"]}'
 # -> 201 {"id":"ntf_...","status":"pending","priority":"critical","recipients_total":2,...}
 
 # Inspect (after Horizon processes it)
-curl http://us.test-horizon.com:8080/api/notifications/ntf_... -H 'Accept: application/json'
+curl http://us.test-horizon.com:8090/api/notifications/ntf_... -H 'Accept: application/json'
 # -> {"status":"sent","counts":{"total":2,"sent":2,"failed":0,"pending":0},"deliveries":[...]}
 ```
 
