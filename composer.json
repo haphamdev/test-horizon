@@ -19,9 +19,7 @@
         "larastan/larastan": "^3.9",
         "laravel/boost": "^2.2",
         "laravel/pail": "^1.2.5",
-        "laravel/pao": "^1.0.6",
         "laravel/pint": "^1.27",
-        "laravel/sail": "^1.53",
         "mockery/mockery": "^1.6",
         "nunomaduro/collision": "^8.9.3",
         "pestphp/pest": "^5.3",
@@ -44,13 +42,7 @@
             "composer install",
             "@php -r \"file_exists('.env') || copy('.env.example', '.env');\"",
             "@php artisan key:generate",
-            "@php artisan migrate --force",
-            "npm install",
-            "npm run build"
-        ],
-        "dev": [
-            "Composer\\Config::disableProcessTimeout",
-            "@php artisan dev"
+            "@php artisan migrate --force"
         ],
         "lint": [
             "pint --parallel"
@@ -60,8 +52,6 @@
         ],
         "ci:check": [
             "Composer\\Config::disableProcessTimeout",
-            "npm run check",
-            "npm run types:check",
             "@test"
         ],
         "types:check": [
