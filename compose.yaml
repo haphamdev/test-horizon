@@ -1,35 +1,184 @@
-services:
-  postgres:
-    image: postgres:latest
-    container_name: test-horizon-postgres
-    environment:
-      POSTGRES_USER: ${DB_USERNAME:-postgres}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-mysecretpassword}
-      POSTGRES_DB: ${DB_DATABASE:-postgres}
-    ports:
-      - "${DB_PORT:-5432}:5432"
-    volumes:
-      - postgres-data:/var/lib/postgresql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-postgres}"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+# Local multi-region simulation of the production Horizon deployment.
+#
+# Per region (us, asia): an isolated Redis broker, a Postgres database, a Laravel
+# app serving user/API requests, and a Horizon worker backend. A dedicated,
+# lightweight Horizon dashboard app per region (separate codebase, scaffolded
+# later in ./horizon-dashboard) is wired under the "dashboard" profile.
+#
+# db/redis are internal-only (no published host ports); the nginx proxy is the
+# single entry point. Inspect data layers with `docker compose exec`.
+#
+# The app services run PHP's built-in server directly (php -S ... server.php) rather
+# than `php artisan serve`: artisan serve strips non-whitelisted env vars from the
+# request-handling child, so env_file DB_HOST/REDIS_HOST overrides would not reach
+# HTTP requests. Running php -S directly inherits the full container environment.
 
-  redis:
+x-php: &php
+  build:
+    context: .
+    dockerfile: docker/php/Dockerfile
+  image: test-horizon-php
+  restart: unless-stopped
+  volumes:
+    - .:/var/www/html
+
+services:
+  # ---- US region -----------------------------------------------------------
+  redis-us:
     image: redis:latest
-    container_name: test-horizon-redis
+    container_name: test-horizon-redis-us
     command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-mypassword}
-    ports:
-      - "${REDIS_PORT:-6380}:6379"
     volumes:
-      - redis-data:/data
+      - redis-us-data:/data
     healthcheck:
       test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD:-mypassword} ping"]
       interval: 5s
       timeout: 5s
       retries: 5
 
+  db-us:
+    image: postgres:latest
+    container_name: test-horizon-db-us
+    environment:
+      POSTGRES_USER: ${DB_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-mysecretpassword}
+      POSTGRES_DB: ${DB_DATABASE:-postgres}
+    volumes:
+      - db-us-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app-us:
+    <<: *php
+    container_name: test-horizon-app-us
+    command: sh -c "php artisan migrate --force && cd public && php -S 0.0.0.0:8000 ../vendor/laravel/framework/src/Illuminate/Foundation/resources/server.php"
+    env_file:
+      - docker/env/common.env
+      - docker/env/us.env
+    depends_on:
+      db-us:
+        condition: service_healthy
+      redis-us:
+        condition: service_healthy
+
+  horizon-us:
+    <<: *php
+    container_name: test-horizon-horizon-us
+    command: php artisan horizon
+    env_file:
+      - docker/env/common.env
+      - docker/env/us.env
+    depends_on:
+      db-us:
+        condition: service_healthy
+      redis-us:
+        condition: service_healthy
+
+  dash-us:
+    # PLACEHOLDER — separate lightweight Horizon dashboard app (scaffold later).
+    # Build only runs under the dashboard profile, once ./horizon-dashboard exists:
+    #   docker compose --profile dashboard up -d
+    # The dashboard app's own .env must set, to read this region's Horizon data:
+    #   REDIS_HOST=redis-us, REDIS_PASSWORD=mypassword, REDIS_PREFIX=notifyhub:,
+    #   HORIZON_PREFIX=notifyhub_horizon:, HORIZON_NAME=us
+    # and SESSION_DRIVER=file + CACHE_STORE=file (so it needs no database).
+    profiles: ["dashboard"]
+    build:
+      context: ./horizon-dashboard
+    container_name: test-horizon-dash-us
+    restart: unless-stopped
+    environment:
+      REDIS_HOST: redis-us
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-mypassword}
+      REDIS_PREFIX: "notifyhub:"
+      HORIZON_PREFIX: "notifyhub_horizon:"
+      HORIZON_NAME: us
+      SESSION_DRIVER: file
+      CACHE_STORE: file
+    depends_on:
+      redis-us:
+        condition: service_healthy
+
+  # ---- ASIA region ---------------------------------------------------------
+  redis-asia:
+    image: redis:latest
+    container_name: test-horizon-redis-asia
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-mypassword}
+    volumes:
+      - redis-asia-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD:-mypassword} ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  db-asia:
+    image: postgres:latest
+    container_name: test-horizon-db-asia
+    environment:
+      POSTGRES_USER: ${DB_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-mysecretpassword}
+      POSTGRES_DB: ${DB_DATABASE:-postgres}
+    volumes:
+      - db-asia-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app-asia:
+    <<: *php
+    container_name: test-horizon-app-asia
+    command: sh -c "php artisan migrate --force && cd public && php -S 0.0.0.0:8000 ../vendor/laravel/framework/src/Illuminate/Foundation/resources/server.php"
+    env_file:
+      - docker/env/common.env
+      - docker/env/asia.env
+    depends_on:
+      db-asia:
+        condition: service_healthy
+      redis-asia:
+        condition: service_healthy
+
+  horizon-asia:
+    <<: *php
+    container_name: test-horizon-horizon-asia
+    command: php artisan horizon
+    env_file:
+      - docker/env/common.env
+      - docker/env/asia.env
+    depends_on:
+      db-asia:
+        condition: service_healthy
+      redis-asia:
+        condition: service_healthy
+
+  dash-asia:
+    # PLACEHOLDER — see dash-us. Dashboard app .env must set:
+    #   REDIS_HOST=redis-asia, REDIS_PASSWORD=mypassword, REDIS_PREFIX=notifyhub:,
+    #   HORIZON_PREFIX=notifyhub_horizon:, HORIZON_NAME=asia, SESSION/CACHE=file.
+    profiles: ["dashboard"]
+    build:
+      context: ./horizon-dashboard
+    container_name: test-horizon-dash-asia
+    restart: unless-stopped
+    environment:
+      REDIS_HOST: redis-asia
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-mypassword}
+      REDIS_PREFIX: "notifyhub:"
+      HORIZON_PREFIX: "notifyhub_horizon:"
+      HORIZON_NAME: asia
+      SESSION_DRIVER: file
+      CACHE_STORE: file
+    depends_on:
+      redis-asia:
+        condition: service_healthy
+
 volumes:
-  postgres-data:
-  redis-data:
+  redis-us-data:
+  db-us-data:
+  redis-asia-data:
+  db-asia-data:
