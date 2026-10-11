@@ -13,6 +13,7 @@ by Laravel Horizon, with multiple priority queues.
 | [03-queues-and-priorities.md](./03-queues-and-priorities.md) | Queue topology, priority guarantee, fan-out, retries. |
 | [04-simulated-delivery.md](./04-simulated-delivery.md) | Fake sending: latency + random failure. |
 | [05-scheduling.md](./05-scheduling.md) | Optional future-send (deferred from first build). |
+| [multi-region-deployment-high-level.md](./multi-region-deployment-high-level.md) | Per-region isolated stacks; local Docker simulation (us + asia). |
 
 ## Locked defaults
 
