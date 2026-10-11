@@ -28,8 +28,8 @@ class AppServiceProvider extends ServiceProvider
         $this->configureDefaults();
         Queue::createPayloadUsing(function (string $connection, ?string $queue, array $payload) {
             return [
-                "modifiedBy" => "Ha Pham",
-                "modifiedAt" => CarbonImmutable::now()->toDateTimeString(),
+                'modifiedBy' => 'Ha Pham',
+                'modifiedAt' => CarbonImmutable::now()->toDateTimeString(),
             ];
         });
     }
@@ -48,7 +48,7 @@ class AppServiceProvider extends ServiceProvider
         );
 
         Password::defaults(
-            fn(): ?Password => app()->isProduction()
+            fn (): ?Password => app()->isProduction()
             ? Password::min(12)
                 ->mixedCase()
                 ->letters()
